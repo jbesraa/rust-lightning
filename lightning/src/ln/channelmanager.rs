@@ -4632,15 +4632,18 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let mut result = Ok(());
 
-		if !funding_transaction.is_coin_base() {
-			for inp in funding_transaction.input.iter() {
-				if inp.witness.is_empty() {
-					result = result.and(Err(APIError::APIMisuseError {
-						err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
-					}));
-				}
-			}
-		}
+		// If the funding source coming from a payjoin transaction, we wont have the witness data
+		// to validate the transaction.	
+		//
+		// // if !funding_transaction.is_coin_base() {
+		// 	for inp in funding_transaction.input.iter() {
+		// 		if inp.witness.is_empty() {
+		// 			result = result.and(Err(APIError::APIMisuseError {
+		// 				err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
+		// 			}));
+		// 		}
+		// 	}
+		// }
 		if funding_transaction.output.len() > u16::max_value() as usize {
 			result = result.and(Err(APIError::APIMisuseError {
 				err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
