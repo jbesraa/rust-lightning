@@ -3,8 +3,8 @@
 ## API Updates
 
  * `ChainMonitor::archive_fully_resolved_channel_monitors` is now provided to
-   remove `ChannelMonitor`s from memory which have been fully resolved on-chain
-   and now are not needed. It uses the new `Persist::archive_persisted_channel`
+   remove from memory `ChannelMonitor`s that have been fully resolved on-chain
+   and are now not needed. It uses the new `Persist::archive_persisted_channel`
    to inform the storage layer that such a monitor should be archived (#2964).
  * An `OutputSweeper` is now provided which will automatically sweep
    `SpendableOutputDescriptor`s, retrying until the sweep confirms (#2825).
@@ -17,8 +17,8 @@
  * `Event::PaymentForwarded` now includes `skimmed_fee_msat` (#2858).
  * The `hashbrown` dependency has been upgraded and the use of `ahash` as the
    no-std hash table hash function has been removed. As a consequence, LDK's
-   `Hash{Map,Set}`s no longer feature several constructors when LDK is build
-   with no-std, see the `util::hash_tables` module instead. On platforms which
+   `Hash{Map,Set}`s no longer feature several constructors when LDK is built
+   with no-std; see the `util::hash_tables` module instead. On platforms that
    `getrandom` supports, setting the `possiblyrandom/getrandom` feature flag
    will ensure hash tables are resistant to HashDoS attacks, though the
    `possiblyrandom` crate should detect most common platforms (#2810, #2891).
@@ -59,13 +59,13 @@
    was never woken. For those not using async persistence and using the async
    `lightning-background-processor`, this could cause a memory leak in the
    `ChainMonitor` (#2894).
- * Inbound channel requests which fail in
+ * Inbound channel requests that fail in
    `ChannelManager::accept_inbound_channel` would previously have stalled from
    the peer's perspective as no `error` message was sent (#2953).
  * Blinded path construction has been tuned to select paths more likely to
-   succeed, improving BOLT12 payment reliability (#2911, #2912, XXX?).
+   succeed, improving BOLT12 payment reliability (#2911, #2912).
  * After a reorg, `lightning-transaction-sync` could have failed to follow a
-   transaction which LDK needed information about (#2946).
+   transaction that LDK needed information about (#2946).
  * `RecipientOnionFields`' `custom_tlvs` are now propagated to recipients when
    paying with blinded paths (#2975).
  * If a peer has relatively high latency, `PeerManager` may have failed to
