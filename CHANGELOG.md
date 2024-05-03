@@ -26,7 +26,7 @@
    be retried using `ChannelMonitor::signer_unblocked` (#2816).
  * `SpendableOutputDescriptor::to_psbt_input` now includes the `witness_script`
    where available as well as new proprietary data which can be used to
-   re-derive some spending keys from the base key (#2761).
+   re-derive some spending keys from the base key (#2761, #3004).
  * `OutPoint::to_channel_id` has been removed in favor of
    `ChannelId::v1_from_funding_outpoint` in preparation for v2 channels with a
    different `ChannelId` derivation scheme (#2797).
@@ -68,19 +68,32 @@
    transaction that LDK needed information about (#2946).
  * `RecipientOnionFields`' `custom_tlvs` are now propagated to recipients when
    paying with blinded paths (#2975).
+ * `Event::ChannelClosed` is now properly generated and peers are properly
+   notified for all channels that as a part of a batch channel open fail to be
+   funded (#3029).
+ * In cases where user event processing is substantially delayed such that we
+   complete multiple round-trips with our peers before a `PaymentSent` event is
+   handled and then restart without persisting the `ChannelManager` after having
+   persisted a `ChannelMonitor[Update]`, on startup we may have `Err`d trying to
+   deserialize the `ChannelManager` (#3021).
  * If a peer has relatively high latency, `PeerManager` may have failed to
    establish a connection (#2993).
  * `ChannelUpdate` messages broadcasted for our own channel closures are now
    slightly more robust (#2731).
+ * Deserializing malformed BOLT11 invoices may have resulted in an integer
+   overflow panic in debug builds (#3032).
  * In exceedingly rare cases (no cases of this are known), LDK may have created
    an invalid serialization for a `ChannelManager` (#2998).
  * Message processing latency handling BOLT12 payments has been reduced (#2881).
+ * Latency in processing `Event::SpendableOutputs` may be reduced (#3033).
 
 ## Node Compatibility
  * LDK's blinded paths were inconsistent with other implementations in several
-   ways, which have been addressed (#2856, #2936, #2945, XXX)
+   ways, which have been addressed (#2856, #2936, #2945).
  * LDK's messaging blinded paths now support the latest features which some
    nodes may begin relying on soon (#2961).
+ * LDK's BOLT12 structs have been updated to support some last-minute changes to
+   the spec (#3017, #3018).
  * CLN v24.02 requires the `gossip_queries` feature for all peers, however LDK
    by default does not set it for those not using a `P2PGossipSync` (e.g. those
    using RGS). This change was reverted in CLN v24.02.2 however for now LDK
