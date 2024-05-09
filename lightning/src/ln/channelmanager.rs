@@ -2860,6 +2860,20 @@ macro_rules! send_channel_ready {
 		}
 	}}
 }
+macro_rules! emit_funding_tx_broadcast_safe_event {
+	($locked_events: expr, $channel: expr, $funding_tx: expr) => {
+		if !$channel.context.funding_tx_broadcast_safe_event_emitted() {
+			$locked_events.push_back((events::Event::FundingTxBroadcastSafe {
+				channel_id: $channel.context.channel_id(),
+				user_channel_id: $channel.context.get_user_id(),
+				funding_tx: $funding_tx,
+				counterparty_node_id: $channel.context.get_counterparty_node_id(),
+				former_temporary_channel_id: $channel.context.temporary_channel_id(),
+			}, None));
+			$channel.context.set_funding_tx_broadcast_safe_event_emitted();
+		}
+	}
+}
 
 macro_rules! emit_channel_pending_event {
 	($locked_events: expr, $channel: expr) => {
@@ -4483,7 +4497,7 @@ where
 	/// which checks the correctness of the funding transaction given the associated channel.
 	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>, &Transaction) -> Result<OutPoint, &'static str>>(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, is_batch_funding: bool,
-		mut find_funding_output: FundingOutput,
+		mut find_funding_output: FundingOutput, is_manual_broadcast: bool,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -4548,6 +4562,9 @@ where
 				msg,
 			});
 		}
+		if is_manual_broadcast {
+			chan.context.set_manual_broadcast();
+		}
 		match peer_state.channel_by_id.entry(chan.context.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
 				panic!("Generated duplicate funding txid?");
@@ -4579,7 +4596,7 @@ where
 	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
 		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, false, |_, tx| {
 			Ok(OutPoint { txid: tx.txid(), index: output_index })
-		})
+		}, false)
 	}
 
 	/// Call this upon creation of a funding transaction for the given channel.
@@ -4616,6 +4633,56 @@ where
 		self.batch_funding_transaction_generated(&[(temporary_channel_id, counterparty_node_id)], funding_transaction)
 	}
 
+
+	/// Unsafe: This method does not check if the funding transaction is signed ie. if the witness data
+	/// is empty or not. It is the caller's responsibility to ensure that the funding transaction
+	/// is final.
+	///
+	/// If you wish to use a safer method, use [`ChannelManager::funding_transaction_generated`]
+	///
+	/// Call this upon creation of a funding transaction for the given channel.
+	///
+	/// Note that if this method is called successfully and the counterparty sent us
+	/// `funding_signed`, the funding transaction wont be broadcasted and you are expected to
+	/// broadcast it manually when receiving the `FundingTxBroadcastSafe` event.
+	///
+	/// In contrary to the original `funding_transaction_generated` method, the `ChannelPending`
+	/// event is never emitted. Once the funding transaction is confirmed by both parties, the
+	/// next event will be `ChannelReady`.
+	///
+	/// Returns an [`APIError::APIMisuseError`] if the funding_transaction spent non-SegWit outputs
+	/// or if no output was found which matches the parameters in [`Event::FundingGenerationReady`].
+	///
+	/// Returns [`APIError::APIMisuseError`] if the funding transaction is not final for propagation
+	/// across the p2p network.
+	///
+	/// Returns [`APIError::ChannelUnavailable`] if a funding transaction has already been provided
+	/// for the channel or if the channel has been closed as indicated by [`Event::ChannelClosed`].
+	///
+	/// May panic if the output found in the funding transaction is duplicative with some other
+	/// channel (note that this should be trivially prevented by using unique funding transaction
+	/// keys per-channel).
+	///
+	/// Note that this includes RBF or similar transaction replacement strategies - lightning does
+	/// not currently support replacing a funding transaction on an existing channel. Instead,
+	/// create a new channel with a conflicting funding transaction.
+	///
+	/// Note to keep the miner incentives aligned in moving the blockchain forward, we recommend
+	/// the wallet software generating the funding transaction to apply anti-fee sniping as
+	/// implemented by Bitcoin Core wallet. See <https://bitcoinops.org/en/topics/fee-sniping/>
+	/// for more details.
+	///
+	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
+	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	pub fn unsafe_manual_funding_transaction_generated(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		let temporary_channels = &[(temporary_channel_id, counterparty_node_id)];
+		return self.batch_funding_transaction_generated_intern(temporary_channels, funding_transaction, true);
+
+	}
+
 	/// Call this upon creation of a batch funding transaction for the given channels.
 	///
 	/// Return values are identical to [`Self::funding_transaction_generated`], respective to
@@ -4639,6 +4706,11 @@ where
 				}
 			}
 		}
+		result.and(self.batch_funding_transaction_generated_intern(temporary_channels, funding_transaction, false))
+	}
+
+	fn batch_funding_transaction_generated_intern(&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding_transaction: Transaction, is_manual_broadcast: bool) -> Result<(), APIError> {
+		let mut result = Ok(());
 		if funding_transaction.output.len() > u16::max_value() as usize {
 			result = result.and(Err(APIError::APIMisuseError {
 				err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
@@ -4706,7 +4778,8 @@ where
 						funding_batch_state.push((ChannelId::v1_from_funding_outpoint(outpoint), *counterparty_node_id, false));
 					}
 					Ok(outpoint)
-				})
+				},
+				is_manual_broadcast)
 			);
 		}
 		if let Err(ref e) = result {
@@ -6843,8 +6916,14 @@ where
 		}
 
 		if let Some(tx) = funding_broadcastable {
-			log_info!(logger, "Broadcasting funding transaction with txid {}", tx.txid());
-			self.tx_broadcaster.broadcast_transactions(&[&tx]);
+			if channel.context.is_manual_broadcast() {
+				log_info!(logger, "Not broadcasting funding transaction with txid {} as it is manually managed", tx.txid());
+				let mut pending_events = self.pending_events.lock().unwrap();
+				emit_funding_tx_broadcast_safe_event!(pending_events, channel, tx);
+			} else {
+				log_info!(logger, "Broadcasting funding transaction with txid {}", tx.txid());
+				self.tx_broadcaster.broadcast_transactions(&[&tx]);
+			}
 		}
 
 		{

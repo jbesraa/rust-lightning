@@ -1525,6 +1525,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// We track whether we already emitted a `ChannelPending` event.
 	channel_pending_event_emitted: bool,
 
+	// We track whether we already emitted a `FundingTxBroadcastSafe` event.
+	funding_tx_broadcast_safe_event_emitted: bool,
+
 	// We track whether we already emitted a `ChannelReady` event.
 	channel_ready_event_emitted: bool,
 
@@ -1541,6 +1544,14 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
+
+	/// Using this flag will prevent the funding transaction from being broadcasted 
+	/// and will allow the user to manually broadcast it.
+	///
+	/// The funding transaction can be accessed through the [`Event::FundingTxBroadcastSafe`] event.
+	///
+	/// [`Event::FundingTxBroadcastSafe`]: crate::events::Event::FundingTxBroadcastSafe
+	is_manual_broadcast: bool,
 }
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
@@ -1861,6 +1872,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			outbound_scid_alias: 0,
 
 			channel_pending_event_emitted: false,
+			funding_tx_broadcast_safe_event_emitted: false,
 			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
@@ -1872,6 +1884,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			local_initiated_shutdown: None,
 
 			blocked_monitor_updates: Vec::new(),
+
+			is_manual_broadcast: false,
 		};
 
 		Ok(channel_context)
@@ -2082,6 +2096,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			outbound_scid_alias,
 
 			channel_pending_event_emitted: false,
+			funding_tx_broadcast_safe_event_emitted: false,
 			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
@@ -2092,6 +2107,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 			blocked_monitor_updates: Vec::new(),
 			local_initiated_shutdown: None,
+			is_manual_broadcast: false,
 		})
 	}
 
@@ -2333,6 +2349,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.config.options.forwarding_fee_proportional_millionths
 	}
 
+	pub fn is_manual_broadcast(&self) -> bool {
+		self.is_manual_broadcast
+	}
+
 	pub fn get_cltv_expiry_delta(&self) -> u16 {
 		cmp::max(self.config.options.cltv_expiry_delta, MIN_CLTV_EXPIRY_DELTA)
 	}
@@ -2366,6 +2386,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.channel_pending_event_emitted
 	}
 
+	// Returns whether we already emitted a `FundingTxBroadcastSafe` event.
+	pub(crate) fn funding_tx_broadcast_safe_event_emitted(&self) -> bool {
+		self.funding_tx_broadcast_safe_event_emitted
+	}
+
 	// Remembers that we already emitted a `ChannelPending` event.
 	pub(crate) fn set_channel_pending_event_emitted(&mut self) {
 		self.channel_pending_event_emitted = true;
@@ -2379,6 +2404,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	// Remembers that we already emitted a `ChannelReady` event.
 	pub(crate) fn set_channel_ready_event_emitted(&mut self) {
 		self.channel_ready_event_emitted = true;
+	}
+
+	// Remembers that we already emitted a `FundingTxBroadcastSafe` event.
+	pub(crate) fn set_funding_tx_broadcast_safe_event_emitted(&mut self) {
+		self.funding_tx_broadcast_safe_event_emitted = true;
 	}
 
 	/// Tracks the number of ticks elapsed since the previous [`ChannelConfig`] was updated. Once
@@ -2415,6 +2445,17 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 		self.config.options = *config;
 		did_channel_update
+	}
+
+	/// Marking the channel as manual broadcast is used in order to prevent LDK from automatically
+	/// broadcasting the funding transaction.
+	///
+	/// This is useful if you wish to get hold of the funding transaction before it is broadcasted
+	/// via [`Event::FundingTxBroadcastSafe`] event.
+	///
+	/// [`Event::FundingTxBroadcastSafe`]: crate::events::Event::FundingTxBroadcastSafe
+	pub fn set_manual_broadcast(&mut self) {
+		self.is_manual_broadcast = true;
 	}
 
 	/// Returns true if funding_signed was sent/received and the
@@ -8696,6 +8737,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 
 		let channel_pending_event_emitted = Some(self.context.channel_pending_event_emitted);
 		let channel_ready_event_emitted = Some(self.context.channel_ready_event_emitted);
+		let funding_tx_broadcast_safe_event_emitted = Some(self.context.funding_tx_broadcast_safe_event_emitted);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. Therefore,
@@ -8708,6 +8750,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		if !self.context.monitor_pending_update_adds.is_empty() {
 			monitor_pending_update_adds = Some(&self.context.monitor_pending_update_adds);
 		}
+		let is_manual_broadcast = Some(self.context.is_manual_broadcast);
 
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
@@ -8747,6 +8790,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
 			// 45 and 47 are reserved for async signing
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
+			(51, is_manual_broadcast, option),
+			(53, funding_tx_broadcast_safe_event_emitted, option)
 		});
 
 		Ok(())
@@ -9035,6 +9080,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut outbound_scid_alias = None;
 		let mut channel_pending_event_emitted = None;
 		let mut channel_ready_event_emitted = None;
+		let mut funding_tx_broadcast_safe_event_emitted = None;
 
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id: Option<[u8; 32]> = None;
@@ -9055,6 +9101,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
+
+		let mut is_manual_broadcast = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -9088,6 +9136,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
 			// 45 and 47 are reserved for async signing
 			(49, local_initiated_shutdown, option),
+			(51, is_manual_broadcast, option),
+			(53, funding_tx_broadcast_safe_event_emitted, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -9310,6 +9360,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				// Later in the ChannelManager deserialization phase we scan for channels and assign scid aliases if its missing
 				outbound_scid_alias: outbound_scid_alias.unwrap_or(0),
 
+				funding_tx_broadcast_safe_event_emitted: funding_tx_broadcast_safe_event_emitted.unwrap_or(true),
 				channel_pending_event_emitted: channel_pending_event_emitted.unwrap_or(true),
 				channel_ready_event_emitted: channel_ready_event_emitted.unwrap_or(true),
 
@@ -9322,6 +9373,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				local_initiated_shutdown,
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
+				is_manual_broadcast: is_manual_broadcast.unwrap_or(true),
 			},
 			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,

@@ -531,6 +531,40 @@ pub enum Event {
 		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 	},
+	/// Used to indicate that the counterparty node has provided the signature(s) required to
+	/// recover our funds in case they go offline.
+	///
+	/// It is safe(and your responsibility) to broadcast the funding transaction upon receiving this
+	/// event.
+	///
+	/// This event is only emitted if you called
+	/// [`ChannelManager::unsafe_manual_funding_transaction_generated`] instead of
+	/// [`ChannelManager::funding_transaction_generated`].
+	///
+	/// [`ChannelManager::unsafe_manual_funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::unsafe_manual_funding_transaction_generated
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	FundingTxBroadcastSafe {
+		/// The `channel_id` indicating which channel has reached this stage.
+		channel_id: ChannelId,
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for an inbound channel.  This may be zero for objects
+		/// serialized with LDK versions prior to 0.0.113.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// Channel funding transaction which was signed by the counterparty.
+		funding_tx: Transaction,
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
+		/// The `temporary_channel_id` this channel used to be known by during channel establishment.
+		///
+		/// Will be `None` for channels created prior to LDK version 0.0.115.
+		former_temporary_channel_id: Option<ChannelId>,
+	},
 	/// Indicates that we've been offered a payment and it needs to be claimed via calling
 	/// [`ChannelManager::claim_funds`] with the preimage given in [`PaymentPurpose`].
 	///
@@ -1404,6 +1438,16 @@ impl Writeable for Event {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
 			},
+			&Event::FundingTxBroadcastSafe { ref channel_id, ref user_channel_id, ref funding_tx, ref counterparty_node_id, ref former_temporary_channel_id} => {
+				41u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, channel_id, required),
+					(2, user_channel_id, required),
+					(4, funding_tx, required),
+					(6, counterparty_node_id, required),
+					(8, former_temporary_channel_id, required),
+				});
+			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -1814,6 +1858,27 @@ impl MaybeReadable for Event {
 			},
 			// Note that we do not write a length-prefixed TLV for ConnectionNeeded events.
 			35u8 => Ok(None),
+			41u8 => {
+					let mut channel_id = RequiredWrapper(None);
+					let mut user_channel_id = RequiredWrapper(None);
+					let mut funding_tx = RequiredWrapper(None);
+					let mut counterparty_node_id = RequiredWrapper(None);
+					let mut former_temporary_channel_id = None;
+					read_tlv_fields!(reader, {
+						(0, channel_id, required),
+						(2, user_channel_id, required),
+						(4, funding_tx, required),
+						(6, counterparty_node_id, required),
+						(8, former_temporary_channel_id, required)
+					});
+					Ok(Some(Event::FundingTxBroadcastSafe {
+						channel_id: channel_id.0.unwrap(),
+						user_channel_id: user_channel_id.0.unwrap(),
+						funding_tx: funding_tx.0.unwrap(),
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						former_temporary_channel_id
+					}))
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
